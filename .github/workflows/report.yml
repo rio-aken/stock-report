@@ -1,0 +1,54 @@
+name: 株価レポート自動配信
+
+on:
+  schedule:
+    # 毎週金曜 16:30 JST（= UTC 07:30）→ ウィークリーレポート
+    - cron: '30 7 * * 5'
+    # 平日毎日 10:00 JST（= UTC 01:00）→ 急変チェックのみ
+    - cron: '0 1 * * 1-5'
+  # 手動実行（テスト用）
+  workflow_dispatch:
+    inputs:
+      run_mode:
+        description: '実行モード（weekly / daily）'
+        required: false
+        default: 'weekly'
+
+jobs:
+  run-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20       # 最大20分で強制終了
+
+    steps:
+      - name: コードをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python 3.12 セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: 依存ライブラリをインストール
+        run: pip install -r requirements.txt
+
+      - name: 日本語フォントをインストール（チャート用）
+        run: sudo apt-get install -y fonts-noto-cjk
+
+      - name: レポートを実行
+        env:
+          GMAIL_ADDRESS:      ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          TO_EMAIL:           ${{ secrets.TO_EMAIL }}
+          GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
+          # 手動実行時はinputを優先、スケジュール実行時は main.py が曜日で判定
+          RUN_MODE: ${{ github.event.inputs.run_mode || '' }}
+        run: python main.py
+
+      - name: 実行ログをアーティファクトとして保存（失敗時のデバッグ用）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: error-log-${{ github.run_id }}
+          path: /tmp/stock_charts/
+          retention-days: 7

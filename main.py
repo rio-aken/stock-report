@@ -1,3 +1,6 @@
+import sys
+print("=== 起動確認 ===", flush=True)
+print(f"argv={sys.argv}, cwd={__import__('os').getcwd()}", flush=True)
 """
 株価レポート自動配信 メインスクリプト
 実行モード:

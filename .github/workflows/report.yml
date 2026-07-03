@@ -30,7 +30,10 @@ jobs:
           cache: 'pip'
 
       - name: 依存ライブラリをインストール
-        run: pip install -r requirements.txt
+        run: |
+          pip install --upgrade pip
+          pip install --no-cache-dir -r requirements.txt
+          pip list
 
       - name: 日本語フォントをインストール（チャート用）
         run: sudo apt-get install -y fonts-noto-cjk

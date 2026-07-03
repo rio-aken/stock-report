@@ -4,5 +4,4 @@ matplotlib
 mplfinance
 openpyxl
 google-generativeai
-japanize-matplotlib
 Pillow

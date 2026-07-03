@@ -14,7 +14,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-import japanize_matplotlib  # 日本語フォント
+matplotlib.rcParams['font.family'] = 'Noto Sans CJK JP'
 
 logger = logging.getLogger(__name__)
 

@@ -242,7 +242,9 @@ def fetch_weekly_margin(target_codes: set[str],
         return {}
 
     result: dict[str, dict] = {}
-    remaining = set(target_codes)
+    # PDF内のコード欄は5桁表記（銘柄コード+末尾0。例: 2413→24130, 285A→285A0）
+    pdf_code_map = {c + "0": c for c in target_codes}
+    remaining = set(pdf_code_map.keys())
     sample_lines: list[str] = []
     try:
         import unicodedata
@@ -252,40 +254,45 @@ def fetch_weekly_margin(target_codes: set[str],
                     break
                 text = page.extract_text() or ""
                 for line in text.splitlines():
-                    # 全角数字・全角英字を半角へ正規化
                     norm = unicodedata.normalize("NFKC", line).strip()
                     if not norm:
                         continue
-                    if len(sample_lines) < 8:
-                        sample_lines.append(norm)
-                    # コードは行内のどこにあってもよい。前後が英数字でない
-                    # 位置で照合（「2413エムスリー」のような連結にも一致）
-                    code = None
+                    if "JP3" in norm and len(sample_lines) < 5:
+                        sample_lines.append(norm)   # 診断用: データ行のみ採取
+                    pdf_code = None
                     for c in remaining:
+                        # 前後が英数字でない位置で照合（銘柄名との連結にも一致）
                         if re.search(rf"(?<![0-9A-Za-z]){re.escape(c)}(?![0-9A-Za-z])", norm):
-                            code = c
+                            pdf_code = c
                             break
-                    if code is not None:
-                        after = norm.split(code, 1)[1]
-                        numbers = [
-                            int(t.replace(",", ""))
-                            for t in re.findall(r"-?\d{1,3}(?:,\d{3})*|-?\d+", after)
-                        ]
-                        result[code] = {
+                    if pdf_code is not None:
+                        after = norm.split(pdf_code, 1)[1]
+                        # 数値抽出: 「▲ 300」= -300（▲は直後の数値を負にする）
+                        numbers: list[int] = []
+                        neg = False
+                        for t in after.split():
+                            if t in ("▲", "△", "-"):
+                                neg = True
+                                continue
+                            if re.fullmatch(r"\d{1,3}(?:,\d{3})*|\d+", t):
+                                v = int(t.replace(",", ""))
+                                numbers.append(-v if neg else v)
+                            neg = False
+                        result[pdf_code_map[pdf_code]] = {
                             "date": used_date,
                             "numbers": numbers,
                             "line": norm,
                         }
-                        remaining.discard(code)
+                        remaining.discard(pdf_code)
     except Exception as e:
         logger.warning("信用残PDF解析失敗: %s", e)
         return {}
 
     if remaining:
-        logger.info("信用残: 次の銘柄はPDF内に見つかりませんでした: %s", sorted(remaining))
+        logger.info("信用残: 次の銘柄はPDF内に見つかりませんでした（貸借/制度信用の対象外の可能性）: %s",
+                    sorted(pdf_code_map[c] for c in remaining))
     if not result and sample_lines:
-        # 診断用: 1銘柄も一致しない場合、抽出テキストの実際の形をログに残す
-        logger.warning("信用残PDF抽出サンプル（診断用・先頭8行）:")
+        logger.warning("信用残PDF抽出サンプル（診断用・データ行5件）:")
         for s in sample_lines:
             logger.warning("  | %s", s)
     return result

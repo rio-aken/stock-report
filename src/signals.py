@@ -38,9 +38,10 @@ MA_DAYS = 25                      # D4/B4: 移動平均日数
 MIN_SCORE_TO_ALERT = 3            # この点数以上の銘柄があればメール送信
 MAX_SCORE = 5
 
-# 信用残PDFの数値列の意味づけ。初回実行時にPDF原本と突合して確認すること。
-# 例: {"sell_balance": 0, "buy_balance": 1} → numbers[0]=売残, numbers[1]=買残
-MARGIN_COLUMN_MAP = {"sell_balance": 0, "buy_balance": 1}
+# 信用残PDFの数値列の意味づけ（2026/6/26申込分の実PDFで検証済み）。
+# 行の数値は 売残高, 売残前週比, 買残高, 買残前週比, （以下内訳）の順。
+MARGIN_COLUMN_MAP = {"sell_balance": 0, "sell_change": 1,
+                     "buy_balance": 2, "buy_change": 3}
 
 
 @dataclass
@@ -113,26 +114,24 @@ def evaluate_short_positions(code: str, snapshots: list) -> tuple[bool | None, b
 # D3/B3: 信用買残（銘柄別・週次）
 # ─────────────────────────────────────────────────────────
 def evaluate_margin_buy(code: str, current: dict | None,
-                        prev_state: dict | None) -> tuple[bool | None, bool | None, str]:
+                        prev_state: dict | None = None) -> tuple[bool | None, bool | None, str]:
     """
     current: jpx_sources.fetch_weekly_margin() の1銘柄分 {"date", "numbers", "line"}
-    prev_state: 前回実行時にstateへ保存した同形式データ
-    週次比較のため、前週分のstateが無い初回は None（判定除外）。
+    PDF自体に前週比が含まれるため、当週データのみで判定できる
+    （prev_state は互換性のため残しているが使用しない）。
     """
-    idx = MARGIN_COLUMN_MAP["buy_balance"]
-    if current is None or len(current.get("numbers", [])) <= idx:
-        return None, None, "信用買残: 今週分データなし"
-    if prev_state is None or len(prev_state.get("numbers", [])) <= idx:
-        return None, None, "信用買残: 前週分未蓄積（次回実行から判定）"
-    if current["date"] == prev_state["date"]:
-        return None, None, f"信用買残: 新週データ未公表（{current['date']}申込分のまま）"
+    idx_b = MARGIN_COLUMN_MAP["buy_balance"]
+    idx_c = MARGIN_COLUMN_MAP["buy_change"]
+    if current is None or len(current.get("numbers", [])) <= max(idx_b, idx_c):
+        return None, None, "信用買残: 今週分データなし（貸借/制度信用の対象外の可能性）"
 
-    cur = current["numbers"][idx]
-    old = prev_state["numbers"][idx]
-    if old <= 0:
-        return None, None, "信用買残: 前週値が不正"
-    pct = (cur - old) / old * 100
-    desc = f"信用買残 {old:,} → {cur:,}株（{pct:+.1f}%）"
+    cur = current["numbers"][idx_b]
+    chg = current["numbers"][idx_c]
+    prev = cur - chg
+    if prev <= 0:
+        return None, None, "信用買残: 前週値が算出不能"
+    pct = chg / prev * 100
+    desc = f"信用買残 {prev:,} → {cur:,}株（{pct:+.1f}%、{current['date']}申込分）"
     return pct >= MARGIN_BUY_DELTA_PCT, pct <= -MARGIN_BUY_DELTA_PCT, desc
 
 

@@ -1,5 +1,10 @@
 {
-  "foreign_flow": [],
+  "foreign_flow": [
+    {
+      "week": "260701",
+      "net": 64
+    }
+  ],
   "margin": {
     "2413": {
       "date": "20260703",

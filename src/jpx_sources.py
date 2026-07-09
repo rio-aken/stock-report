@@ -243,29 +243,38 @@ def fetch_weekly_margin(target_codes: set[str],
 
     result: dict[str, dict] = {}
     remaining = set(target_codes)
+    sample_lines: list[str] = []
     try:
+        import unicodedata
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             for page in pdf.pages:
                 if not remaining:
                     break
                 text = page.extract_text() or ""
                 for line in text.splitlines():
-                    tokens = line.split()
-                    if not tokens:
+                    # 全角数字・全角英字を半角へ正規化
+                    norm = unicodedata.normalize("NFKC", line).strip()
+                    if not norm:
                         continue
-                    # 銘柄コードが行頭とは限らない（貸借区分等の列が先行する場合）
-                    # ため、先頭3トークンから探す
-                    code = next((t for t in tokens[:3] if t in remaining), None)
+                    if len(sample_lines) < 8:
+                        sample_lines.append(norm)
+                    # コードは行内のどこにあってもよい。前後が英数字でない
+                    # 位置で照合（「2413エムスリー」のような連結にも一致）
+                    code = None
+                    for c in remaining:
+                        if re.search(rf"(?<![0-9A-Za-z]){re.escape(c)}(?![0-9A-Za-z])", norm):
+                            code = c
+                            break
                     if code is not None:
+                        after = norm.split(code, 1)[1]
                         numbers = [
                             int(t.replace(",", ""))
-                            for t in tokens
-                            if re.fullmatch(r"-?[\d,]+", t) and t != code
+                            for t in re.findall(r"-?\d{1,3}(?:,\d{3})*|-?\d+", after)
                         ]
                         result[code] = {
                             "date": used_date,
                             "numbers": numbers,
-                            "line": line.strip(),
+                            "line": norm,
                         }
                         remaining.discard(code)
     except Exception as e:
@@ -274,6 +283,11 @@ def fetch_weekly_margin(target_codes: set[str],
 
     if remaining:
         logger.info("信用残: 次の銘柄はPDF内に見つかりませんでした: %s", sorted(remaining))
+    if not result and sample_lines:
+        # 診断用: 1銘柄も一致しない場合、抽出テキストの実際の形をログに残す
+        logger.warning("信用残PDF抽出サンプル（診断用・先頭8行）:")
+        for s in sample_lines:
+            logger.warning("  | %s", s)
     return result
 
 

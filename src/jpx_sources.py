@@ -48,10 +48,11 @@ MARGIN_PDF_TEMPLATE = (
 INVESTOR_TYPE_INDEX = f"{JPX_BASE}/markets/statistics-equities/investor-type/index.html"
 
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (personal stock alert; contact via GitHub) "
-        "python-requests"
-    )
+    # JPXはプログラム的UAを拒否する場合があるため一般的なブラウザUAを使用
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                   "AppleWebKit/537.36 (KHTML, like Gecko) "
+                   "Chrome/126.0.0.0 Safari/537.36"),
+    "Accept-Language": "ja,en;q=0.8",
 }
 TIMEOUT = 30
 
@@ -59,10 +60,9 @@ TIMEOUT = 30
 def _get(url: str) -> requests.Response | None:
     try:
         r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
-        if r.status_code == 404:
-            logger.info("404: %s", url)
+        if r.status_code != 200:
+            logger.warning("HTTP %s: %s", r.status_code, url)
             return None
-        r.raise_for_status()
         return r
     except requests.RequestException as e:
         logger.warning("取得失敗 %s: %s", url, e)
@@ -202,17 +202,40 @@ def fetch_weekly_margin(target_codes: set[str],
         logger.error("pdfplumber未インストール。requirementsを確認してください。")
         return {}
 
-    # 直近の金曜（申込日）から遡って存在するPDFを探す
-    d = date.today()
-    d -= timedelta(days=(d.weekday() - 4) % 7)   # 直近の金曜
+    # 方式1: 掲載ページから最新のPDFリンクを直接取得（公表スケジュール変更に強い）
     pdf_bytes, used_date = None, None
-    for _ in range(weeks_back):
-        url = MARGIN_PDF_TEMPLATE.format(yyyymmdd=d.strftime("%Y%m%d"))
-        r = _get(url)
-        if r is not None and r.content[:4] == b"%PDF":
-            pdf_bytes, used_date = r.content, d.strftime("%Y%m%d")
-            break
-        d -= timedelta(days=7)
+    page = _get(f"{JPX_BASE}/markets/statistics-equities/margin/05.html")
+    if page is not None:
+        soup = BeautifulSoup(page.text, "html.parser")
+        pdf_links: list[tuple[str, str]] = []
+        for a in soup.find_all("a", href=True):
+            m = re.search(r"/syumatsu(\d{8})00\.pdf$", a["href"])
+            if m:
+                url = a["href"]
+                if url.startswith("/"):
+                    url = JPX_BASE + url
+                pdf_links.append((m.group(1), url))
+        if pdf_links:
+            pdf_links.sort(key=lambda t: t[0], reverse=True)
+            latest_date, latest_url = pdf_links[0]
+            r = _get(latest_url)
+            if r is not None and r.content[:4] == b"%PDF":
+                pdf_bytes, used_date = r.content, latest_date
+                logger.info("信用残PDF取得: %s申込分（ページ掲載の最新）", latest_date)
+        else:
+            logger.warning("信用残: ページ上にsyumatsu*.pdfリンクなし（構成変更の可能性）")
+
+    # 方式2（フォールバック）: 直近の金曜からURLを推測
+    if pdf_bytes is None:
+        d = date.today()
+        d -= timedelta(days=(d.weekday() - 4) % 7)   # 直近の金曜
+        for _ in range(weeks_back):
+            url = MARGIN_PDF_TEMPLATE.format(yyyymmdd=d.strftime("%Y%m%d"))
+            r = _get(url)
+            if r is not None and r.content[:4] == b"%PDF":
+                pdf_bytes, used_date = r.content, d.strftime("%Y%m%d")
+                break
+            d -= timedelta(days=7)
 
     if pdf_bytes is None:
         logger.warning("信用残PDFが見つかりません（祝日ずれ・URL変更の可能性）")
@@ -230,8 +253,10 @@ def fetch_weekly_margin(target_codes: set[str],
                     tokens = line.split()
                     if not tokens:
                         continue
-                    code = tokens[0].strip()
-                    if code in remaining:
+                    # 銘柄コードが行頭とは限らない（貸借区分等の列が先行する場合）
+                    # ため、先頭3トークンから探す
+                    code = next((t for t in tokens[:3] if t in remaining), None)
+                    if code is not None:
                         numbers = [
                             int(t.replace(",", ""))
                             for t in tokens

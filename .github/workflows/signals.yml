@@ -1,0 +1,43 @@
+# 複合シグナルチェック（Phase 1）
+# 平日18:30 JST（= 09:30 UTC）に実行。
+# JPXの掲載時刻に基づく設計:
+#   空売り残高      … 毎営業日17:00目処 → 当日分を取得可能
+#   信用残(週次PDF) … 毎週火曜16:30目安 → 火曜以降の実行で新週分を取得
+#   投資部門別      … 毎週第4営業日15:30 → 木曜以降の実行で新週分を取得
+name: 複合シグナルチェック
+
+on:
+  schedule:
+    - cron: "30 9 * * 1-5"   # UTC 09:30 = JST 18:30 平日
+  workflow_dispatch:
+
+permissions:
+  contents: write   # signal_state.json をコミットするため
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements-signals.txt
+
+      - name: Run signal check
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          TO_EMAIL: ${{ secrets.TO_EMAIL }}
+        run: python signals_main.py
+
+      - name: Commit state
+        run: |
+          git config user.name "signal-bot"
+          git config user.email "actions@github.com"
+          git add data/signal_state.json
+          git diff --cached --quiet || git commit -m "update signal state [skip ci]"
+          git push

@@ -326,6 +326,7 @@ def fetch_foreign_investor_flow(n_files: int = 1) -> list[dict]:
         return []
 
     links.sort(key=lambda t: t[0], reverse=True)
+    logger.info("投資部門別: %d件のファイルを検出（最新: %s週分）", len(links), links[0][0])
     out: list[dict] = []
     for week, url in links[:n_files]:
         r = _get(url)
@@ -333,16 +334,18 @@ def fetch_foreign_investor_flow(n_files: int = 1) -> list[dict]:
             continue
         net, conf = _parse_foreign_net(r.content)
         if net is not None:
+            logger.info("投資部門別: %s週 海外投資家 差引き %+d千円 (confidence=%s)",
+                        week, net, conf)
             out.append({"week": week, "net": net, "confidence": conf})
     return out
 
 
 def _parse_foreign_net(content: bytes) -> tuple[int | None, str]:
     """
-    「海外投資家」行を全シートから探し、行内の数値から差引き額を推定する。
-    JPXの週間表は「売り／買い／合計／差引き」構成のため、
-    差引き = 買い − 売り を独立に再計算できた場合は confidence=high、
-    行末値をそのまま使った場合は low とする。
+    「海外投資家」（表記ゆれ「外国人」も許容）の行を全シートから探し、
+    差引き額を推定する。数値がExcel内で文字列（"1,234,567"）として
+    格納されている場合にも対応。
+    差引き = 買い − 売り を再計算して行内の値と一致すれば confidence=high。
     """
     try:
         sheets = pd.read_excel(io.BytesIO(content), sheet_name=None,
@@ -351,18 +354,39 @@ def _parse_foreign_net(content: bytes) -> tuple[int | None, str]:
         logger.warning("投資部門別Excel解析失敗: %s", e)
         return None, "low"
 
-    for _, df in sheets.items():
+    def to_num(v) -> float | None:
+        if isinstance(v, (int, float)) and not pd.isna(v):
+            return float(v)
+        if isinstance(v, str):
+            s = v.strip().replace(",", "").replace("△", "-").replace("▲", "-")
+            try:
+                return float(s)
+            except ValueError:
+                return None
+        return None
+
+    candidates = []   # 診断用
+    for sheet_name, df in sheets.items():
         for i in range(len(df)):
             row = df.iloc[i].tolist()
-            if not any(isinstance(v, str) and "海外投資家" in v for v in row):
+            if not any(isinstance(v, str) and ("海外投資家" in v or "外国人" in v)
+                       for v in row):
                 continue
-            nums = [v for v in row if isinstance(v, (int, float))
-                    and not pd.isna(v) and abs(v) > 0]
+            nums = [n for n in (to_num(v) for v in row)
+                    if n is not None and abs(n) > 0]
+            candidates.append((sheet_name, i, row[:8], len(nums)))
             if len(nums) >= 3:
-                # 先頭から 売り, 買い ... と仮定して差引きを再計算し、
-                # 行内のいずれかの値と一致すれば high
                 diff = nums[1] - nums[0]
                 if any(abs(diff - n) < 1 for n in nums[2:]):
                     return int(diff), "high"
                 return int(nums[-1]), "low"
+
+    # ここに到達 = 抽出失敗。原因究明用の診断ログを必ず残す
+    if candidates:
+        logger.warning("投資部門別: 海外投資家の行はあるが数値を認識できず。診断:")
+        for sheet, i, cells, n in candidates[:3]:
+            logger.warning("  | sheet=%s row=%d 数値%d個 cells=%s", sheet, i, n, cells)
+    else:
+        logger.warning("投資部門別: 『海外投資家』の行が見つかりません。シート名: %s",
+                       list(sheets.keys()))
     return None, "low"

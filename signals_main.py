@@ -37,8 +37,20 @@ def load_watchlist() -> list[dict]:
     if not WATCHLIST_PATH.exists():
         logger.error("watchlist.csv がありません。README_signals.md を参照してください。")
         sys.exit(1)
-    with open(WATCHLIST_PATH, encoding="utf-8") as f:
-        rows = [r for r in csv.DictReader(f) if r.get("code", "").strip()]
+    # Windowsのメモ帳/Excelで編集された場合に備え、
+    # UTF-8(BOM付き含む) → Shift_JIS(CP932) の順で自動判別する
+    rows = None
+    for enc in ("utf-8-sig", "cp932"):
+        try:
+            with open(WATCHLIST_PATH, encoding=enc) as f:
+                rows = [r for r in csv.DictReader(f) if (r.get("code") or "").strip()]
+            logger.info("watchlist.csv を %s として読み込みました", enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if rows is None:
+        logger.error("watchlist.csv の文字コードを判別できません（UTF-8またはShift_JISで保存してください）。")
+        sys.exit(1)
     if not rows:
         logger.error("watchlist.csv に銘柄がありません。")
         sys.exit(1)

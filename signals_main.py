@@ -71,7 +71,12 @@ def load_state() -> dict:
 
 
 def save_state(state: dict) -> None:
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    parent = STATE_PATH.parent
+    # 「data」という名前のファイルが誤って存在するとmkdirが失敗するため退避
+    if parent.exists() and not parent.is_dir():
+        logger.warning("'%s' がファイルとして存在するため削除してフォルダを作成します", parent)
+        parent.unlink()
+    parent.mkdir(parents=True, exist_ok=True)
     STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2),
                           encoding="utf-8")
 
@@ -102,12 +107,13 @@ def main() -> None:
     state = load_state()
 
     # ── 海外投資家フロー（週次・市場全体）: 取得してstateに蓄積 ──
+    # 同じ週を再取得した場合は上書きする（過去の誤取得値の自動修正を兼ねる）
+    # 過去3週分を取り込み（D1/B1の連続判定を即時有効化）
     latest_flows = fetch_foreign_investor_flow(n_files=3)
-    known_weeks = {h["week"] for h in state["foreign_flow"]}
+    flow_map = {h["week"]: h for h in state["foreign_flow"]}
     for f in latest_flows:
-        if f["week"] not in known_weeks:
-            state["foreign_flow"].insert(0, {"week": f["week"], "net": f["net"]})
-    state["foreign_flow"] = sorted(state["foreign_flow"],
+        flow_map[f["week"]] = {"week": f["week"], "net": f["net"]}
+    state["foreign_flow"] = sorted(flow_map.values(),
                                    key=lambda h: h["week"], reverse=True)[:FOREIGN_HISTORY_MAX]
     foreign = evaluate_foreign_flow(state["foreign_flow"])
 

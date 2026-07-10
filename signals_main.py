@@ -102,7 +102,7 @@ def main() -> None:
     state = load_state()
 
     # ── 海外投資家フロー（週次・市場全体）: 取得してstateに蓄積 ──
-    latest_flows = fetch_foreign_investor_flow(n_files=1)
+    latest_flows = fetch_foreign_investor_flow(n_files=3)
     known_weeks = {h["week"] for h in state["foreign_flow"]}
     for f in latest_flows:
         if f["week"] not in known_weeks:

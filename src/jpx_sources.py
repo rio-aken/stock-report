@@ -365,33 +365,78 @@ def _parse_foreign_net(content: bytes) -> tuple[int | None, str]:
                 return None
         return None
 
+    total_sell = 0.0
+    total_buy = 0.0
+    sheets_used: list[str] = []
+    all_validated = True
     candidates = []   # 診断用
+
     for sheet_name, df in sheets.items():
+        # 「海外投資家」ラベル行（売り行）を探す。
+        # 実構造: ['海外投資家','売り','Sales', 金額, 比率, 増減...] の行に続き、
+        # 次行以降に '買い/Purchases'・'合計/Total'・'差引き/Balance' の行が並ぶ。
         for i in range(len(df)):
             row = df.iloc[i].tolist()
             if not any(isinstance(v, str) and ("海外投資家" in v or "外国人" in v)
                        for v in row):
                 continue
-            nums = [n for n in (to_num(v) for v in row) if n is not None]
-            candidates.append((sheet_name, i, row[:8], len(nums)))
-            # 金額列（千円）のみ抽出。比率(%)や件数を除外するため1億円以上に限定。
-            # 週間表の並びは 売り金額, 買い金額, 合計金額,（差引き）の順。
-            big = [n for n in nums if abs(n) >= 1e5]
-            if len(big) < 3:
+
+            sell = buy = block_total = balance = None
+            for j in range(i, min(i + 6, len(df))):
+                r = df.iloc[j].tolist()
+                labels = " ".join(str(v) for v in r if isinstance(v, str))
+                nums = [n for n in (to_num(v) for v in r) if n is not None]
+                big = [n for n in nums if abs(n) >= 1e5]   # 金額列（比率%等を除外）
+                if not big:
+                    continue
+                if sell is None and ("売り" in labels or "Sales" in labels):
+                    sell = max(big)
+                elif buy is None and ("買い" in labels or "Purchase" in labels):
+                    buy = max(big)
+                elif block_total is None and ("合計" in labels or "Total" in labels):
+                    block_total = max(big)
+                elif balance is None and ("差引" in labels or "Balance" in labels):
+                    balance = max(big, key=abs)   # 差引きは負値もあり得る
+
+            if sell is None or buy is None:
+                candidates.append((sheet_name, i, row[:8],
+                                   f"売り={sell} 買い={buy}"))
                 continue
-            sell, buy, total = big[0], big[1], big[2]
-            # 検算: 売り+買い=合計 が成立する場合のみ採用（誤列掴み防止）
-            if abs((sell + buy) - total) <= max(10.0, abs(total) * 0.001):
-                diff = buy - sell
-                logger.info("投資部門別: sheet=%s 売り%,.0f 買い%,.0f 合計検算OK",
-                            sheet_name, sell, buy)
-                return int(diff), "high"
+
+            # 検算: 合計行または差引き行と自前計算の一致を確認
+            diff = buy - sell
+            validated = False
+            if block_total is not None and \
+                    abs((sell + buy) - block_total) <= max(10.0, block_total * 0.001):
+                validated = True
+            if balance is not None and abs(diff - balance) <= max(10.0, abs(diff) * 0.001):
+                validated = True
+            if (block_total is not None or balance is not None) and not validated:
+                logger.warning(f"投資部門別: sheet={sheet_name} 検算不一致のため除外 "
+                               f"(売{sell:,.0f} 買{buy:,.0f} 合計{block_total} 差引{balance})")
+                all_validated = False
+                break
+
+            total_sell += sell
+            total_buy += buy
+            sheets_used.append(sheet_name)
+            logger.info(f"投資部門別: sheet={sheet_name} 売り{sell:,.0f} "
+                        f"買い{buy:,.0f} 差引き{diff:+,.0f}"
+                        f"{'（検算OK）' if validated else ''}")
+            break   # 1シートにつき1ブロック
+
+    if sheets_used:
+        net = total_buy - total_sell
+        conf = "high" if all_validated else "low"
+        logger.info(f"投資部門別: 全市場合算（{'+'.join(sheets_used)}） "
+                    f"海外投資家 差引き {net:+,.0f}千円")
+        return int(net), conf
 
     # ここに到達 = 抽出失敗。原因究明用の診断ログを必ず残す
     if candidates:
-        logger.warning("投資部門別: 海外投資家の行はあるが検算可能な金額列を特定できず。診断:")
-        for sheet, i, cells, n in candidates[:3]:
-            logger.warning("  | sheet=%s row=%d 数値%d個 cells=%s", sheet, i, n, cells)
+        logger.warning("投資部門別: 海外投資家ブロックの売り/買い行を特定できず。診断:")
+        for sheet, i, cells, note in candidates[:3]:
+            logger.warning("  | sheet=%s row=%d %s cells=%s", sheet, i, note, cells)
     else:
         logger.warning("投資部門別: 『海外投資家』の行が見つかりません。シート名: %s",
                        list(sheets.keys()))

@@ -379,6 +379,15 @@ def _parse_foreign_net(content: bytes) -> tuple[int | None, str]:
                 continue
 
             sell = buy = block_total = balance = None
+
+            def week_amount(big: list[float]) -> float | None:
+                """各行には前週・当週の金額が左右に並ぶ（PDF原本で確認済み:
+                左=前週, 右=当週）。差引き列（金額の数%以下）を除外するため
+                「行内最大値の20%以上の正値」に絞り、その右端=当週金額を返す。"""
+                mx = max(big)
+                cands = [n for n in big if n > 0 and n >= mx * 0.2]
+                return cands[-1] if cands else None
+
             for j in range(i, min(i + 6, len(df))):
                 r = df.iloc[j].tolist()
                 labels = " ".join(str(v) for v in r if isinstance(v, str))
@@ -387,11 +396,11 @@ def _parse_foreign_net(content: bytes) -> tuple[int | None, str]:
                 if not big:
                     continue
                 if sell is None and ("売り" in labels or "Sales" in labels):
-                    sell = max(big)
+                    sell = week_amount(big)
                 elif buy is None and ("買い" in labels or "Purchase" in labels):
-                    buy = max(big)
+                    buy = week_amount(big)
                 elif block_total is None and ("合計" in labels or "Total" in labels):
-                    block_total = max(big)
+                    block_total = week_amount(big)
                 elif balance is None and ("差引" in labels or "Balance" in labels):
                     balance = max(big, key=abs)   # 差引きは負値もあり得る
 

@@ -372,18 +372,24 @@ def _parse_foreign_net(content: bytes) -> tuple[int | None, str]:
             if not any(isinstance(v, str) and ("海外投資家" in v or "外国人" in v)
                        for v in row):
                 continue
-            nums = [n for n in (to_num(v) for v in row)
-                    if n is not None and abs(n) > 0]
+            nums = [n for n in (to_num(v) for v in row) if n is not None]
             candidates.append((sheet_name, i, row[:8], len(nums)))
-            if len(nums) >= 3:
-                diff = nums[1] - nums[0]
-                if any(abs(diff - n) < 1 for n in nums[2:]):
-                    return int(diff), "high"
-                return int(nums[-1]), "low"
+            # 金額列（千円）のみ抽出。比率(%)や件数を除外するため1億円以上に限定。
+            # 週間表の並びは 売り金額, 買い金額, 合計金額,（差引き）の順。
+            big = [n for n in nums if abs(n) >= 1e5]
+            if len(big) < 3:
+                continue
+            sell, buy, total = big[0], big[1], big[2]
+            # 検算: 売り+買い=合計 が成立する場合のみ採用（誤列掴み防止）
+            if abs((sell + buy) - total) <= max(10.0, abs(total) * 0.001):
+                diff = buy - sell
+                logger.info("投資部門別: sheet=%s 売り%,.0f 買い%,.0f 合計検算OK",
+                            sheet_name, sell, buy)
+                return int(diff), "high"
 
     # ここに到達 = 抽出失敗。原因究明用の診断ログを必ず残す
     if candidates:
-        logger.warning("投資部門別: 海外投資家の行はあるが数値を認識できず。診断:")
+        logger.warning("投資部門別: 海外投資家の行はあるが検算可能な金額列を特定できず。診断:")
         for sheet, i, cells, n in candidates[:3]:
             logger.warning("  | sheet=%s row=%d 数値%d個 cells=%s", sheet, i, n, cells)
     else:

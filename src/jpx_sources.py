@@ -365,10 +365,7 @@ def _parse_foreign_net(content: bytes) -> tuple[int | None, str]:
                 return None
         return None
 
-    total_sell = 0.0
-    total_buy = 0.0
-    sheets_used: list[str] = []
-    all_validated = True
+    results: list[dict] = []
     candidates = []   # 診断用
 
     for sheet_name, df in sheets.items():
@@ -414,22 +411,32 @@ def _parse_foreign_net(content: bytes) -> tuple[int | None, str]:
             if (block_total is not None or balance is not None) and not validated:
                 logger.warning(f"投資部門別: sheet={sheet_name} 検算不一致のため除外 "
                                f"(売{sell:,.0f} 買{buy:,.0f} 合計{block_total} 差引{balance})")
-                all_validated = False
                 break
 
-            total_sell += sell
-            total_buy += buy
-            sheets_used.append(sheet_name)
+            results.append({"sheet": sheet_name, "sell": sell, "buy": buy,
+                            "diff": diff, "validated": validated})
             logger.info(f"投資部門別: sheet={sheet_name} 売り{sell:,.0f} "
                         f"買い{buy:,.0f} 差引き{diff:+,.0f}"
                         f"{'（検算OK）' if validated else ''}")
             break   # 1シートにつき1ブロック
 
-    if sheets_used:
-        net = total_buy - total_sell
-        conf = "high" if all_validated else "low"
-        logger.info(f"投資部門別: 全市場合算（{'+'.join(sheets_used)}） "
-                    f"海外投資家 差引き {net:+,.0f}千円")
+    if results:
+        # 「Tokyo & Nagoya」等の合計シートは個別市場（Prime/Standard/Growth）を
+        # 含むため、存在する場合はそれのみを採用（二重計上防止）。
+        agg = [r for r in results
+               if re.search(r"&|二市場|三市場|合計|全市場", str(r["sheet"]))]
+        if agg:
+            chosen = agg[0]
+            net = chosen["diff"]
+            conf = "high" if chosen["validated"] else "low"
+            logger.info(f"投資部門別: 合計シート（{chosen['sheet']}）を採用 "
+                        f"海外投資家 差引き {net:+,.0f}千円")
+        else:
+            net = sum(r["diff"] for r in results)
+            conf = "high" if all(r["validated"] for r in results) else "low"
+            logger.info(f"投資部門別: 個別市場合算"
+                        f"（{'+'.join(str(r['sheet']) for r in results)}） "
+                        f"海外投資家 差引き {net:+,.0f}千円")
         return int(net), conf
 
     # ここに到達 = 抽出失敗。原因究明用の診断ログを必ず残す
